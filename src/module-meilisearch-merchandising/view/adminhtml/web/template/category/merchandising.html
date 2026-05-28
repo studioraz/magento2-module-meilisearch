@@ -33,7 +33,7 @@
                         <span class="copy-tooltip">Copied!</span>
                     </button>
                 </div>
-                <div class="product-qty" data-bind="text: 'QTY: ' + stock.qty"></div>
+                <div class="product-qty" data-bind="text: 'QTY: ' + (($data.stock && $data.stock.qty !== undefined) ? $data.stock.qty : 'N/A')"></div>
                 <div class="product-price" data-bind="text: $parent.formatPrice(price_0)"></div>
             </div>
         </div>
