@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
-    <virtualType name="catalogProductIndexHandler" type="Walkwizus\MeilisearchBase\Model\Indexer\BaseIndexerHandler">
+    <virtualType name="catalogProductMeilisearchIndexHandler" type="Walkwizus\MeilisearchBase\Model\Indexer\BaseIndexerHandler">
         <arguments>
             <argument name="indexerId" xsi:type="string">catalog_product</argument>
             <argument name="indexPrimaryKey" xsi:type="string">id</argument>
@@ -10,22 +10,16 @@
             </argument>
         </arguments>
     </virtualType>
+    <type name="Walkwizus\MeilisearchCatalog\Model\Indexer\CompositeIndexerHandler">
+        <arguments>
+            <argument name="mirrorIndexerHandler" xsi:type="object">catalogProductMeilisearchIndexHandler</argument>
+        </arguments>
+    </type>
     <type name="Magento\CatalogSearch\Model\Indexer\IndexerHandlerFactory">
         <arguments>
             <argument name="handlers" xsi:type="array">
-                <item name="meilisearch" xsi:type="string">catalogProductIndexHandler</item>
+                <item name="opensearch" xsi:type="string">Walkwizus\MeilisearchCatalog\Model\Indexer\CompositeIndexerHandler</item>
             </argument>
-        </arguments>
-    </type>
-    <virtualType name="catalogCategorySearchIndexHandler" type="Walkwizus\MeilisearchBase\Model\Indexer\BaseIndexerHandler">
-        <arguments>
-            <argument name="indexerId" xsi:type="string">catalog_category</argument>
-            <argument name="indexPrimaryKey" xsi:type="string">entity_id</argument>
-        </arguments>
-    </virtualType>
-    <type name="Walkwizus\MeilisearchCatalog\Model\Indexer\Category">
-        <arguments>
-            <argument name="indexerHandler" xsi:type="object">catalogCategorySearchIndexHandler</argument>
         </arguments>
     </type>
     <type name="Walkwizus\MeilisearchBase\Model\AttributeProvider">
@@ -36,11 +30,6 @@
                         <item name="categoryPosition" xsi:type="object">Walkwizus\MeilisearchCatalog\Model\AttributeProvider\CatalogProduct\CategoryPosition</item>
                         <item name="eav" xsi:type="object">Walkwizus\MeilisearchCatalog\Model\AttributeProvider\CatalogProduct\Eav</item>
                         <item name="price" xsi:type="object">Walkwizus\MeilisearchCatalog\Model\AttributeProvider\CatalogProduct\Price</item>
-                    </item>
-                </item>
-                <item name="catalog_category" xsi:type="array">
-                    <item name="index" xsi:type="array">
-                        <item name="default" xsi:type="object">Walkwizus\MeilisearchCatalog\Model\AttributeProvider\CatalogCategory\DefaultAttribute</item>
                     </item>
                 </item>
             </argument>
