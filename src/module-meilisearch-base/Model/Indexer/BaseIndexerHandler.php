@@ -4,55 +4,29 @@ declare(strict_types=1);
 
 namespace Walkwizus\MeilisearchBase\Model\Indexer;
 
-use Magento\Framework\Indexer\SaveHandler\IndexerInterface;
-use Magento\Search\Model\EngineResolver;
-use Walkwizus\MeilisearchAi\Api\Data\EmbedderInterface;
-use Walkwizus\MeilisearchBase\Service\SettingsManager;
-use Walkwizus\MeilisearchBase\Service\IndexesManager;
-use Walkwizus\MeilisearchBase\Service\DocumentsManager;
-use Walkwizus\MeilisearchBase\Service\HealthManager;
-use Walkwizus\MeilisearchBase\SearchAdapter\SearchIndexNameResolver;
 use Magento\Framework\Indexer\SaveHandler\Batch;
+use Magento\Framework\Indexer\SaveHandler\IndexerInterface;
+use Magento\Framework\Search\Request\Dimension;
 use Walkwizus\MeilisearchBase\Model\AttributeMapper;
 use Walkwizus\MeilisearchBase\Model\AttributeProvider;
-use Walkwizus\MeilisearchAi\Model\ResourceModel\Embedder\Link as EmbedderLinkResource;
-use Walkwizus\MeilisearchAi\Model\ResourceModel\Embedder\CollectionFactory as EmbedderCollectionFactory;
-use Magento\Framework\Search\Request\Dimension;
-use Walkwizus\MeilisearchBase\Model\ResourceModel\Engine;
+use Walkwizus\MeilisearchBase\SearchAdapter\SearchIndexNameResolver;
+use Walkwizus\MeilisearchBase\Service\DocumentsManager;
+use Walkwizus\MeilisearchBase\Service\HealthManager;
+use Walkwizus\MeilisearchBase\Service\IndexesManager;
+use Walkwizus\MeilisearchBase\Service\SettingsManager;
 
 class BaseIndexerHandler implements IndexerInterface
 {
-    const INDEX_SWAP_SUFFIX = 'tmp';
+    private const INDEX_SWAP_SUFFIX = 'tmp';
 
-    /**
-     * @var bool
-     */
     private bool $isFullReindex = false;
 
     /**
-     * @var array
+     * @var array<string, string>
      */
     private array $temporaryIndexes = [];
 
-    /**
-     * @param EngineResolver $engineResolver
-     * @param SettingsManager $settingsManager
-     * @param IndexesManager $indexesManager
-     * @param DocumentsManager $documentsManager
-     * @param HealthManager $healthManager
-     * @param SearchIndexNameResolver $searchIndexNameResolver
-     * @param Batch $batch
-     * @param string $indexerId
-     * @param AttributeMapper $attributeMapper
-     * @param AttributeProvider $attributeProvider
-     * @param EmbedderLinkResource $embedderLinkResource
-     * @param EmbedderCollectionFactory $embedderCollectionFactory
-     * @param int $batchSize
-     * @param string $indexPrimaryKey
-     * @param array $preProcessors
-     */
     public function __construct(
-        private readonly EngineResolver $engineResolver,
         private readonly SettingsManager $settingsManager,
         private readonly IndexesManager $indexesManager,
         private readonly DocumentsManager $documentsManager,
@@ -62,123 +36,123 @@ class BaseIndexerHandler implements IndexerInterface
         private readonly string $indexerId,
         private readonly AttributeMapper $attributeMapper,
         private readonly AttributeProvider $attributeProvider,
-        private readonly EmbedderLinkResource $embedderLinkResource,
-        private readonly EmbedderCollectionFactory $embedderCollectionFactory,
         private readonly int $batchSize = 10000,
         private readonly string $indexPrimaryKey = 'id',
         private readonly array $preProcessors = []
-    ) { }
+    ) {
+    }
 
     /**
      * @param Dimension[] $dimensions
-     * @param \Traversable $documents
-     * @return IndexerInterface
      * @throws \Exception
      */
     public function saveIndex($dimensions, \Traversable $documents): IndexerInterface
     {
-        foreach ($dimensions as $dimension) {
-            $storeId = (int)$dimension->getValue();
-            $indexerId = $this->getIndexerId();
-            $indexName = $this->searchIndexNameResolver->getIndexName($storeId, $indexerId);
-            $targetIndexName = $this->isFullReindex ? $indexName . '_' . self::INDEX_SWAP_SUFFIX : $indexName;
+        try {
+            foreach ($dimensions as $dimension) {
+                $storeId = (int)$dimension->getValue();
+                $indexerId = $this->getIndexerId();
+                $indexName = $this->searchIndexNameResolver->getIndexName($storeId, $indexerId);
+                $targetIndexName = $this->isFullReindex ? $indexName . '_' . self::INDEX_SWAP_SUFFIX : $indexName;
 
-            try {
-                $this->settingsManager->updateFilterableAttributes($targetIndexName, $this->attributeProvider->getFilterableAttributes($indexerId, 'index'));
-                $this->settingsManager->updateSortableAttributes($targetIndexName, $this->attributeProvider->getSortableAttributes($indexerId, 'index'));
-                $this->settingsManager->updateSearchableAttributes($targetIndexName, $this->attributeProvider->getSearchableAttributes($indexerId, 'index'));
+                $this->settingsManager->updateFilterableAttributes(
+                    $targetIndexName,
+                    $this->attributeProvider->getFilterableAttributes($indexerId, 'index')
+                );
+                $this->settingsManager->updateSortableAttributes(
+                    $targetIndexName,
+                    $this->attributeProvider->getSortableAttributes($indexerId, 'index')
+                );
+                $this->settingsManager->updateSearchableAttributes(
+                    $targetIndexName,
+                    $this->attributeProvider->getSearchableAttributes($indexerId, 'index')
+                );
 
-                $embedderIds = $this->embedderLinkResource->getEmbedderIdsByUid($indexName);
+                foreach ($this->batch->getItems($documents, $this->batchSize) as $batchDocuments) {
+                    $context = [];
 
-                if (!empty($embedderIds)) {
-                    $embedders = $this->embedderCollectionFactory
-                        ->create()
-                        ->addFieldToFilter('embedder_id', ['in' => $embedderIds]);
-
-                    $embeddersConfig = [];
-
-                    /** @var EmbedderInterface $embedder */
-                    foreach ($embedders as $embedder) {
-                        $embeddersConfig[$embedder->getIdentifier()] = [
-                            'source' => $embedder->getSource(),
-                            'model' => $embedder->getModel(),
-                            'apiKey' => $embedder->getApiKey(),
-                            'documentTemplate' => $embedder->getDocumentTemplate(),
-                        ];
+                    if (isset($this->preProcessors[$indexerId])) {
+                        $context = $this->preProcessors[$indexerId]->prepare($indexerId, $batchDocuments, $storeId);
                     }
 
-                    $this->settingsManager->updateEmbedders($targetIndexName, $embeddersConfig);
-                } else {
-                    $this->settingsManager->resetEmbedders($targetIndexName);
-                }
-            } catch (\Exception $exception) {
-                return $this;
-            }
+                    $batchDocuments = $this->attributeMapper->map($indexerId, $batchDocuments, $storeId, $context);
+                    if ($batchDocuments === []) {
+                        continue;
+                    }
 
-            foreach ($this->batch->getItems($documents, $this->batchSize) as $batchDocuments) {
-                $context = [];
-
-                if (isset($this->preProcessors[$indexerId])) {
-                    $context = $this->preProcessors[$indexerId]->prepare($indexerId, $batchDocuments, $storeId);
-                }
-
-                $batchDocuments = $this->attributeMapper->map($indexerId, $batchDocuments, $storeId, $context);
-                try {
-                    $this->documentsManager->addDocumentsInBatches($targetIndexName, $batchDocuments, $this->indexPrimaryKey);
-                } catch (\Exception $e) {
-                    return $this;
+                    $this->documentsManager->addDocumentsInBatches(
+                        $targetIndexName,
+                        $batchDocuments,
+                        $this->indexPrimaryKey
+                    );
                 }
             }
-        }
 
-        if ($this->isFullReindex && !empty($this->temporaryIndexes)) {
-            $this->performSwap();
+            if ($this->isFullReindex && !empty($this->temporaryIndexes)) {
+                $this->performSwap();
+            }
+        } catch (\Throwable $exception) {
+            $this->resetFullReindexState();
+            throw $exception;
         }
 
         return $this;
     }
 
     /**
-     * @param $dimensions
-     * @param \Traversable $documents
-     * @return IndexerInterface
+     * @param Dimension[] $dimensions
      * @throws \Exception
      */
     public function deleteIndex($dimensions, \Traversable $documents): IndexerInterface
     {
         foreach ($dimensions as $dimension) {
-            $storeId = $dimension->getValue();
+            $storeId = (int)$dimension->getValue();
             $indexerId = $this->getIndexerId();
             $indexName = $this->searchIndexNameResolver->getIndexName($storeId, $indexerId);
 
-            $this->documentsManager->deleteDocuments($indexName, (array)$documents);
+            $documentIds = [];
+            foreach ($documents as $document) {
+                if ($document !== null && $document !== '') {
+                    $documentIds[] = $document;
+                }
+            }
+
+            if ($documentIds !== []) {
+                $this->documentsManager->deleteDocuments($indexName, $documentIds);
+            }
         }
 
         return $this;
     }
 
     /**
-     * @param $dimensions
-     * @return IndexerInterface
+     * @param Dimension[] $dimensions
      * @throws \Exception
      */
     public function cleanIndex($dimensions): IndexerInterface
     {
         $this->isFullReindex = true;
 
-        foreach ($dimensions as $dimension) {
-            $storeId = $dimension->getValue();
-            $indexerId = $this->getIndexerId();
-            $indexName = $this->searchIndexNameResolver->getIndexName($storeId, $indexerId);
-            $tmpIndexName = $indexName . '_' . self::INDEX_SWAP_SUFFIX;
+        try {
+            foreach ($dimensions as $dimension) {
+                $storeId = (int)$dimension->getValue();
+                $indexerId = $this->getIndexerId();
+                $indexName = $this->searchIndexNameResolver->getIndexName($storeId, $indexerId);
+                $tmpIndexName = $indexName . '_' . self::INDEX_SWAP_SUFFIX;
 
-            $this->temporaryIndexes[$indexName] = $tmpIndexName;
+                $this->temporaryIndexes[$indexName] = $tmpIndexName;
 
-            if (!$this->indexesManager->indexExists($indexName)) {
-                $this->indexesManager->createIndex($indexName, $this->indexPrimaryKey);
+                if (!$this->indexesManager->indexExists($indexName)) {
+                    $this->indexesManager->createIndex($indexName, $this->indexPrimaryKey);
+                }
+
+                if ($this->indexesManager->indexExists($tmpIndexName)) {
+                    $this->indexesManager->deleteIndex($tmpIndexName);
+                }
             }
-
-            $this->indexesManager->deleteIndex($tmpIndexName);
+        } catch (\Throwable $exception) {
+            $this->resetFullReindexState();
+            throw $exception;
         }
 
         return $this;
@@ -186,32 +160,23 @@ class BaseIndexerHandler implements IndexerInterface
 
     /**
      * @param Dimension[] $dimensions
-     * @return bool
-     * @throws \Exception
      */
     public function isAvailable($dimensions = []): bool
     {
-        if ($this->engineResolver->getCurrentSearchEngine() !== Engine::SEARCH_ENGINE) {
-            return false;
-        }
-
         try {
             return $this->healthManager->isHealthy();
-        } catch (\Exception $e) {
+        } catch (\Throwable) {
             return false;
         }
     }
 
-    /**
-     * @return string
-     */
     public function getIndexerId(): string
     {
         return $this->searchIndexNameResolver->getIndexMapping($this->indexerId);
     }
 
     /**
-     * @return void
+     * @throws \Exception
      */
     private function performSwap(): void
     {
@@ -224,13 +189,18 @@ class BaseIndexerHandler implements IndexerInterface
             $this->indexesManager->swapIndexes($swaps);
 
             foreach ($this->temporaryIndexes as $tmpIndex) {
-                $this->indexesManager->deleteIndex($tmpIndex);
+                if ($this->indexesManager->indexExists($tmpIndex)) {
+                    $this->indexesManager->deleteIndex($tmpIndex);
+                }
             }
-        } catch (\Exception $e) {
-
         } finally {
-            $this->isFullReindex = false;
-            $this->temporaryIndexes = [];
+            $this->resetFullReindexState();
         }
+    }
+
+    private function resetFullReindexState(): void
+    {
+        $this->isFullReindex = false;
+        $this->temporaryIndexes = [];
     }
 }

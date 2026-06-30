@@ -4,54 +4,35 @@ declare(strict_types=1);
 
 namespace Walkwizus\MeilisearchCatalog\Model\AttributeMapper\CatalogProduct;
 
-use Walkwizus\MeilisearchBase\Api\AttributeMapperInterface;
-use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
 use Magento\Framework\App\ResourceConnection;
-use Magento\Store\Model\StoreManagerInterface;
-use Magento\InventorySalesApi\Api\StockResolverInterface;
-use Magento\InventoryIndexer\Model\StockIndexTableNameResolverInterface;
-use Magento\InventoryIndexer\Indexer\IndexStructure;
-use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Exception\NoSuchEntityException;
+use Magento\Store\Model\StoreManagerInterface;
+use Walkwizus\MeilisearchBase\Api\AttributeMapperInterface;
 
 class Inventory implements AttributeMapperInterface
 {
-    /**
-     * @var array|null
-     */
-    protected ?array $stockIdByWebsite = null;
-
-    /**
-     * @param ResourceConnection $resource
-     * @param StoreManagerInterface $storeManager
-     * @param StockResolverInterface $stockResolver
-     * @param StockIndexTableNameResolverInterface $stockIndexTableNameResolver
-     */
     public function __construct(
         private readonly ResourceConnection $resource,
-        private readonly StoreManagerInterface $storeManager,
-        private readonly StockResolverInterface $stockResolver,
-        private readonly StockIndexTableNameResolverInterface $stockIndexTableNameResolver
-    ) { }
+        private readonly StoreManagerInterface $storeManager
+    ) {
+    }
 
     /**
-     * @param array $documentData
-     * @param $storeId
-     * @param array $context
-     * @return array
      * @throws NoSuchEntityException
-     * @throws LocalizedException
      */
     public function map(array $documentData, $storeId, array $context = []): array
     {
-        $indexData = [];
-        $inventoryData = $this->loadInventoryData($storeId, array_keys($documentData));
+        $productIds = array_map('intval', array_keys($documentData));
+        if ($productIds === []) {
+            return [];
+        }
 
-        foreach ($inventoryData as $inventoryDatum) {
-            $productId = (int) $inventoryDatum['product_id'];
+        $indexData = [];
+        foreach ($this->loadInventoryData((int)$storeId, $productIds) as $inventoryDatum) {
+            $productId = (int)$inventoryDatum['product_id'];
             $indexData[$productId]['stock'] = [
                 'is_in_stock' => (bool)$inventoryDatum['stock_status'],
-                'qty' => (int)$inventoryDatum['qty'],
+                'qty' => (float)$inventoryDatum['qty'],
             ];
         }
 
@@ -59,61 +40,23 @@ class Inventory implements AttributeMapperInterface
     }
 
     /**
-     * @param $storeId
-     * @param $productIds
-     * @return array
-     * @throws LocalizedException
      * @throws NoSuchEntityException
      */
-    protected function loadInventoryData($storeId, $productIds): array
+    private function loadInventoryData(int $storeId, array $productIds): array
     {
-        $websiteId = $this->getWebsiteId($storeId);
-        $stockId = $this->getStockId($websiteId);
-        $tableName = $this->stockIndexTableNameResolver->execute($stockId);
+        $websiteId = (int)$this->storeManager->getStore($storeId)->getWebsiteId();
         $connection = $this->resource->getConnection();
 
+        $websiteIds = array_values(array_unique([$websiteId, 0]));
         $select = $connection->select()
-            ->from(['product' => $connection->getTableName('catalog_product_entity')], [])
-            ->join(
-                ['stock_index' => $tableName],
-                'product.sku = stock_index.' . IndexStructure::SKU,
-                [
-                    'product_id' => 'product.entity_id',
-                    'stock_status' => 'stock_index.' . IndexStructure::IS_SALABLE,
-                    'qty' => 'stock_index.' . IndexStructure::QUANTITY,
-                ]
+            ->from(
+                ['stock_status' => $connection->getTableName('cataloginventory_stock_status')],
+                ['product_id', 'stock_status', 'qty']
             )
-            ->where('product.entity_id IN (?)', $productIds)
-            ->group('product.entity_id');
+            ->where('stock_status.website_id IN (?)', $websiteIds)
+            ->where('stock_status.product_id IN (?)', $productIds)
+            ->order('stock_status.website_id ASC');
 
         return $connection->fetchAll($select);
-    }
-
-    /**
-     * @param $websiteId
-     * @return int|mixed
-     * @throws LocalizedException
-     * @throws NoSuchEntityException
-     */
-    private function getStockId($websiteId): mixed
-    {
-        if (!isset($this->stockIdByWebsite[$websiteId])) {
-            $websiteCode = $this->storeManager->getWebsite($websiteId)->getCode();
-            $stock = $this->stockResolver->execute(SalesChannelInterface::TYPE_WEBSITE, $websiteCode);
-            $stockId = (int) $stock->getStockId();
-            $this->stockIdByWebsite[$websiteId] = $stockId;
-        }
-
-        return $this->stockIdByWebsite[$websiteId];
-    }
-
-    /**
-     * @param $storeId
-     * @return int
-     * @throws NoSuchEntityException
-     */
-    private function getWebsiteId($storeId): int
-    {
-        return (int)$this->storeManager->getStore($storeId)->getWebsiteId();
     }
 }
