@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+
+<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+    <body>
+        <referenceContainer name="before.body.end">
+            <block class="Magento\Framework\View\Element\Template"
+                   name="meilisearch.chat.widget"
+                   template="Hyva_WalkwizusMeilisearchChat::chat.phtml">
+                <arguments>
+                    <argument name="chat_config" xsi:type="object">Walkwizus\MeilisearchChatBase\ViewModel\ChatConfig</argument>
+                    <argument name="hyva_csp" xsi:type="object">Hyva\Theme\ViewModel\HyvaCsp</argument>
+                    <argument name="lucide_icons" xsi:type="object">Hyva\Theme\ViewModel\LucideIcons</argument>
+                </arguments>
+            </block>
+        </referenceContainer>
+    </body>
+</page>

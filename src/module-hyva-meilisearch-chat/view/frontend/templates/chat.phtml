@@ -1,0 +1,789 @@
+<?php
+declare(strict_types=1);
+
+use Hyva\Theme\ViewModel\HyvaCsp;
+use Hyva\Theme\ViewModel\LucideIcons;
+use Magento\Framework\Escaper;
+use Magento\Framework\View\Element\Template;
+use Walkwizus\MeilisearchChatBase\ViewModel\ChatConfig;
+
+/** @var Template $block */
+/** @var Escaper $escaper */
+
+/** @var ChatConfig $chatConfig */
+$chatConfig = $block->getChatConfig();
+/** @var HyvaCsp $hyvaCsp */
+$hyvaCsp = $block->getHyvaCsp();
+/** @var LucideIcons $lucideIcons */
+$lucideIcons = $block->getLucideIcons();
+
+if (!$chatConfig->isEnabled()) {
+    return;
+}
+
+$config = $chatConfig->getJsConfig();
+
+$btnPosition = $chatConfig->getButtonPosition(); // 'auto' | 'left' | 'right'
+// Sanitize bottom distance — allow only CSS length characters
+$btnBottom = preg_replace('/[^0-9.a-z%]/', '', $chatConfig->getButtonBottomDistance()) ?: '1rem';
+?>
+<style>
+    .ms-chat {
+        --ms-chat-accent:          var(--color-brand-primary);
+        --ms-chat-accent-hover:    var(--color-brand-primary-darker);
+        --ms-chat-fg:              var(--color-text-primary);
+        --ms-chat-muted:           var(--color-slate-500);
+        --ms-chat-border:          var(--color-slate-200);
+        --ms-chat-bubble-bot:      var(--color-background-muted);
+        --ms-chat-bottom-distance: <?= $escaper->escapeHtml($btnBottom) ?>;
+        position: fixed;
+        inset-block-end: var(--ms-chat-bottom-distance);
+        <?php if ($btnPosition === 'left'): ?>
+        left: 1rem; right: auto;
+        align-items: flex-start;   /* LTR: launcher stays left */
+        <?php elseif ($btnPosition === 'right'): ?>
+        right: 1rem; left: auto;
+        align-items: flex-end;     /* LTR: launcher stays right */
+        <?php else: /* auto — follows theme direction via logical properties */ ?>
+        inset-inline-start: 1rem;
+        align-items: flex-start;   /* direction-aware: right in RTL, left in LTR */
+        <?php endif; ?>
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        font-size: 14px;
+    }
+    /* Flip align-items for explicit positions in opposite-direction pages */
+    <?php if ($btnPosition === 'left'): ?>
+    [dir="rtl"] .ms-chat { align-items: flex-end; } /* RTL: launcher stays at physical left */
+    <?php elseif ($btnPosition === 'right'): ?>
+    [dir="rtl"] .ms-chat { align-items: flex-start; } /* RTL: launcher stays at physical right */
+    <?php endif; ?>
+    .ms-chat [x-cloak] { display: none !important; }
+
+    /* ── Launcher ─────────────────────────────────────── */
+    .ms-chat__launcher {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 3.5rem;
+        height: 3.5rem;
+        border-radius: 9999px;
+        background: var(--ms-chat-accent);
+        color: #fff;
+        border: none;
+        cursor: pointer;
+        box-shadow: 0 10px 15px -3px rgba(0,0,0,.2), 0 4px 6px -4px rgba(0,0,0,.2);
+        transition: background .2s ease;
+    }
+    .ms-chat__launcher:hover { background: var(--ms-chat-accent-hover); }
+    .ms-chat__launcher svg { width: 1.5rem; height: 1.5rem; }
+    .ms-chat__launcher-icon { display: inline-flex; align-items: center; justify-content: center; }
+
+    /* ── Panel ────────────────────────────────────────── */
+    .ms-chat__panel {
+        display: flex;
+        flex-direction: column;
+        width: 26.5rem;
+        max-width: 92vw;
+        /* fills all available viewport height up to the safe top-clearance ceiling */
+        height: calc(100vh - var(--ms-chat-bottom-distance) - 5.125rem);
+        margin-block-end: .75rem;
+        background: #fff;
+        border-radius: 1.125rem;
+        box-shadow: 10px 10px 40px 0 rgba(0,0,0,.08),
+                    5px 14px 80px 0 rgba(26,26,26,.12);
+        overflow: hidden;
+        <?php if ($btnPosition === 'right'): ?>
+        transform-origin: bottom right;
+        <?php elseif ($btnPosition === 'left'): ?>
+        transform-origin: bottom left;
+        <?php else: /* auto */ ?>
+        transform-origin: bottom left;
+        <?php endif; ?>
+        transition: width .3s ease;
+    }
+    <?php if ($btnPosition === 'auto'): ?>
+    [dir="rtl"] .ms-chat__panel { transform-origin: bottom right; }
+    <?php endif; ?>
+
+    @media (max-width: 639px) {
+        .ms-chat__panel {
+            position: fixed;
+            inset-block-start: .75rem;
+            inset-inline-start: .75rem;
+            inset-inline-end: .75rem;
+            inset-block-end: .75rem;
+            width: auto !important;
+            max-width: 100% !important;
+            height: calc(100dvh - 1.5rem) !important;
+            max-height: calc(100% - 1.5rem) !important;
+            margin-block-end: 0 !important;
+            border-radius: .75rem !important;
+            transform-origin: bottom center !important;
+        }
+    }
+
+    /* ── Open / close animation (Alpine x-transition) ── */
+    .ms-chat-enter       { transition: transform .3s cubic-bezier(.16,1,.3,1), opacity .25s ease; }
+    .ms-chat-enter-start { transform: translateY(16px) scale(.95); opacity: 0; }
+    .ms-chat-enter-end   { transform: translateY(0) scale(1);      opacity: 1; }
+    .ms-chat-leave       { transition: transform .2s ease-in, opacity .2s ease-in; }
+    .ms-chat-leave-start { transform: translateY(0) scale(1);      opacity: 1; }
+    .ms-chat-leave-end   { transform: translateY(16px) scale(.95); opacity: 0; }
+
+    /* ── Header ───────────────────────────────────────── */
+    .ms-chat__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 3.25rem;
+        padding: 0 1.25rem;
+        background: var(--ms-chat-accent);
+        border-radius: 1.125rem 1.125rem 0 0;
+        flex-shrink: 0;
+    }
+    .ms-chat__header-left { display: flex; align-items: center; gap: .75rem; }
+    .ms-chat__avatar {
+        width: 2rem;
+        height: 2rem;
+        border-radius: 9999px;
+        background: rgba(255,255,255,.2);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        flex-shrink: 0;
+    }
+    .ms-chat__title { font-weight: 600; font-size: 1.0625rem; color: #fff; }
+    .ms-chat__actions { display: flex; align-items: center; gap: .125rem; }
+    .ms-chat__action {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: rgba(255,255,255,.8);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: .3125rem;
+        border-radius: .25rem;
+        line-height: 1;
+    }
+    .ms-chat__action:hover { color: #fff; background: rgba(255,255,255,.15); }
+    .ms-chat__close {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: rgba(255,255,255,.8);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: .3125rem;
+        border-radius: .25rem;
+        line-height: 1;
+    }
+    .ms-chat__close:hover { color: #fff; background: rgba(255,255,255,.15); }
+
+    /* ── Messages ─────────────────────────────────────── */
+    .ms-chat__messages {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: 1.25rem 1.25rem .75rem;
+        display: flex;
+        flex-direction: column;
+        gap: .75rem;
+    }
+    .ms-chat__row { display: flex; flex-direction: column; }
+    .ms-chat__row--user { align-items: flex-start; }
+    .ms-chat__row--bot  { align-items: flex-end; gap: .5rem; }
+
+    .ms-chat__bubble {
+        max-width: 85%;
+        padding: .625rem .875rem;
+        border-radius: .625rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.4;
+        font-size: .9375rem;
+    }
+    .ms-chat__bubble--user { background: var(--ms-chat-accent); color: #fff; border-radius: .375rem; }
+    .ms-chat__bubble--bot  { background: var(--ms-chat-bubble-bot); color: var(--ms-chat-fg); border-radius: .625rem; }
+
+    /* ── Product cards ────────────────────────────────── */
+    .ms-chat__cards {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: .75rem;
+        width: 100%;
+    }
+    .ms-chat__card {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--ms-chat-border);
+        border-radius: .5rem;
+        padding: .5rem;
+        background: #fff;
+    }
+    .ms-chat__card-link { text-decoration: none; color: inherit; }
+    .ms-chat__card-img {
+        width: 100%;
+        height: 6rem;
+        object-fit: contain;
+        margin-block-end: .5rem;
+        border-radius: .25rem;
+    }
+    .ms-chat__card-name {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        font-size: .75rem;
+        color: var(--ms-chat-fg);
+    }
+    .ms-chat__card-price {
+        margin-block-start: .25rem;
+        font-weight: 600;
+        color: var(--ms-chat-fg);
+    }
+    .ms-chat__btn {
+        margin-block-start: .5rem;
+        display: inline-block;
+        text-align: center;
+        padding: .25rem .5rem;
+        font-size: .75rem;
+        border-radius: .25rem;
+        cursor: pointer;
+        text-decoration: none;
+    }
+    .ms-chat__btn--add { background: var(--ms-chat-accent); color: #fff; border: none; }
+    .ms-chat__btn--add:hover { background: var(--ms-chat-accent-hover); }
+    .ms-chat__btn--view { border: 1px solid var(--ms-chat-border); color: var(--ms-chat-fg); }
+    .ms-chat__btn--view:hover { background: var(--ms-chat-bubble-bot); }
+
+    /* ── Status / error ───────────────────────────────── */
+    .ms-chat__typing {
+        display: inline-flex;
+        align-items: center;
+        gap: .3rem;
+        padding: .625rem .875rem;
+        background: var(--ms-chat-bubble-bot);
+        border-radius: .625rem;
+    }
+    .ms-chat__typing-dot {
+        width: .375rem;
+        height: .375rem;
+        border-radius: 9999px;
+        background: var(--ms-chat-muted);
+        animation: ms-chat-bounce 1.2s ease-in-out infinite;
+    }
+    .ms-chat__typing-dot:nth-child(2) { animation-delay: .2s; }
+    .ms-chat__typing-dot:nth-child(3) { animation-delay: .4s; }
+    @keyframes ms-chat-bounce {
+        0%, 60%, 100% { transform: translateY(0); opacity: .6; }
+        30%            { transform: translateY(-.35rem); opacity: 1; }
+    }
+    .ms-chat__disclaimer {
+        padding: .375rem 1rem .5rem;
+        text-align: center;
+        font-size: .5625rem;
+        line-height: 1.4;
+        color: var(--ms-chat-muted);
+    }
+    .ms-chat__disclaimer a {
+        color: var(--ms-chat-muted);
+        text-decoration: underline;
+    }
+    .ms-chat__disclaimer a:hover { color: var(--ms-chat-fg); }
+
+    .ms-chat__error {
+        padding: .5rem 1.25rem;
+        border-block-start: 1px solid var(--color-system-error-bg, #fee2e2);
+        background: var(--color-system-error-bg, #fef2f2);
+        color: var(--color-system-error, #b91c1c);
+        font-size: .75rem;
+    }
+
+    /* ── Reply / input bar ────────────────────────────── */
+    .ms-chat__form {
+        display: flex;
+        align-items: flex-end;
+        gap: .5rem;
+        padding: .875rem 1rem 5px;
+        border-block-start: 1px solid var(--ms-chat-border);
+        flex-shrink: 0;
+    }
+    .ms-chat__input {
+        flex: 1 1 auto;
+        border: 1px solid var(--color-slate-300, #cbd5e1);
+        border-radius: .625rem;
+        padding: .5rem .75rem;
+        font-size: .9375rem;
+        font-family: inherit;
+        line-height: 1.5;
+        background: #fff;
+        color: var(--ms-chat-fg);
+        resize: none;
+        overflow-y: auto;
+        max-height: calc(1.5em * 3 + 1rem);
+        transition: border-color .2s ease, box-shadow .2s ease;
+    }
+    .ms-chat__input::placeholder { color: var(--ms-chat-muted); }
+    .ms-chat__input:focus {
+        outline: none;
+        border-color: var(--ms-chat-accent);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--ms-chat-accent) 15%, transparent);
+    }
+    .ms-chat__send {
+        flex-shrink: 0;
+        background: var(--ms-chat-accent);
+        color: #fff;
+        border: none;
+        border-radius: .5rem;
+        width: 2.25rem;
+        height: 2.25rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background .15s ease;
+    }
+    .ms-chat__send:hover { background: var(--ms-chat-accent-hover); }
+    .ms-chat__send:disabled { opacity: .5; cursor: not-allowed; }
+</style>
+
+<div x-data="initMeilisearchChat"
+     data-config="<?= $escaper->escapeHtmlAttr(json_encode($config)) ?>"
+     @keydown.window.escape="closePanel"
+     class="ms-chat">
+
+    <div x-show="panelOpen"
+         x-ref="panel"
+         x-cloak
+         x-transition:enter="ms-chat-enter"
+         x-transition:enter-start="ms-chat-enter-start"
+         x-transition:enter-end="ms-chat-enter-end"
+         x-transition:leave="ms-chat-leave"
+         x-transition:leave-start="ms-chat-leave-start"
+         x-transition:leave-end="ms-chat-leave-end"
+         role="dialog"
+         aria-modal="true"
+         aria-label="<?= $escaper->escapeHtmlAttr($chatConfig->getWidgetTitle()) ?>"
+         class="ms-chat__panel">
+
+        <div class="ms-chat__header">
+            <div class="ms-chat__header-left">
+                <span class="ms-chat__avatar">
+                    <?= /* @noEscape */ $lucideIcons->renderHtml('bot', '', 16, 16, ['aria-hidden' => 'true']) ?>
+                </span>
+                <span class="ms-chat__title" x-text="config.widgetTitle"></span>
+            </div>
+            <div class="ms-chat__actions">
+                <button type="button" @click="resetChat"
+                        aria-label="<?= $escaper->escapeHtmlAttr(__('Start a new chat')) ?>"
+                        title="<?= $escaper->escapeHtmlAttr(__('Start a new chat')) ?>"
+                        class="ms-chat__action">
+                    <?= /* @noEscape */ $lucideIcons->renderHtml('refresh-cw', 'ms-chat__icon', 16, 16, ['aria-hidden' => 'true']) ?>
+                </button>
+
+                <button type="button" @click="closePanel"
+                        aria-label="<?= $escaper->escapeHtmlAttr(__('Close')) ?>"
+                        title="<?= $escaper->escapeHtmlAttr(__('Close')) ?>"
+                        class="ms-chat__close">
+                    <?= /* @noEscape */ $lucideIcons->renderHtml('x', 'ms-chat__icon', 16, 16, ['aria-hidden' => 'true']) ?>
+                </button>
+            </div>
+        </div>
+
+        <div x-ref="messages" aria-live="polite" class="ms-chat__messages">
+            <template x-for="(msg, i) in messages" :key="i">
+                <div>
+                    <div x-show="msg.isUser" class="ms-chat__row ms-chat__row--user">
+                        <div class="ms-chat__bubble ms-chat__bubble--user" dir="auto" x-text="msg.content"></div>
+                    </div>
+                    <div x-show="msg.isAssistant" class="ms-chat__row ms-chat__row--bot">
+                        <div class="ms-chat__bubble ms-chat__bubble--bot" dir="auto" x-html="renderContent(msg.content)"></div>
+                        <div x-show="msg.hasCards" class="ms-chat__cards">
+                            <template x-for="(card, c) in msg.cards" :key="c">
+                                <div class="ms-chat__card">
+                                    <a :href="card.url" class="ms-chat__card-link">
+                                        <img :src="card.image" :alt="card.name" loading="lazy"
+                                             x-show="card.image" class="ms-chat__card-img"/>
+                                        <span class="ms-chat__card-name" x-text="card.name"></span>
+                                    </a>
+                                    <span class="ms-chat__card-price" x-text="card.price_formatted"></span>
+                                    <button type="button" x-show="card.canAddToCart" @click="addToCart"
+                                            class="ms-chat__btn ms-chat__btn--add">
+                                        <?= $escaper->escapeHtml(__('Add to cart')) ?>
+                                    </button>
+                                    <a x-show="card.viewOnly" :href="card.url" class="ms-chat__btn ms-chat__btn--view">
+                                        <?= $escaper->escapeHtml(__('View product')) ?>
+                                    </a>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <div x-show="searching" class="ms-chat__row ms-chat__row--bot">
+                <div class="ms-chat__typing"
+                     role="status"
+                     aria-label="<?= $escaper->escapeHtmlAttr(__('Searching products…')) ?>">
+                    <span class="ms-chat__typing-dot"></span>
+                    <span class="ms-chat__typing-dot"></span>
+                    <span class="ms-chat__typing-dot"></span>
+                </div>
+            </div>
+        </div>
+
+        <div x-show="error" class="ms-chat__error" x-text="error"></div>
+
+        <form @submit.prevent="send" class="ms-chat__form">
+            <textarea x-ref="input" rows="2"
+                      :value="draft"
+                      @input="updateDraft"
+                      @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); send(); }"
+                      aria-label="<?= $escaper->escapeHtmlAttr(__('Type your message')) ?>"
+                      class="ms-chat__input"></textarea>
+            <button type="submit"
+                    :disabled="loading"
+                    aria-label="<?= $escaper->escapeHtmlAttr(__('Send')) ?>"
+                    title="<?= $escaper->escapeHtmlAttr(__('Send')) ?>"
+                    class="ms-chat__send">
+                <?= /* @noEscape */ $lucideIcons->renderHtml('send', '', 15, 15, ['aria-hidden' => 'true']) ?>
+            </button>
+        </form>
+        <?php $disclaimer = $chatConfig->getDisclaimerText(); ?>
+        <?php if ($disclaimer): ?>
+        <p class="ms-chat__disclaimer"><?= /* @noEscape */ $escaper->escapeHtml($disclaimer, ['a']) ?></p>
+        <?php endif; ?>
+    </div>
+
+    <button type="button" @click="togglePanel"
+            aria-label="<?= $escaper->escapeHtmlAttr($chatConfig->getWidgetTitle()) ?>"
+            class="ms-chat__launcher">
+        <span x-show="!panelOpen" class="ms-chat__launcher-icon" aria-hidden="true">
+            <?= /* @noEscape */ $lucideIcons->renderHtml('sparkles', '', 24, 24, ['aria-hidden' => 'true']) ?>
+        </span>
+        <span x-show="panelOpen" class="ms-chat__launcher-icon" aria-hidden="true">
+            <?= /* @noEscape */ $lucideIcons->renderHtml('chevron-down', '', 24, 24, ['aria-hidden' => 'true']) ?>
+        </span>
+    </button>
+</div>
+
+<script>
+    function initMeilisearchChat() {
+        return {
+            config: {},
+            messages: [],
+            draft: '',
+            loading: false,
+            searching: false,
+            error: '',
+            panelOpen: false,
+            controller: null,
+            storageKey: 'meilisearch_chat',
+            defaultError: '<?= $escaper->escapeJs(__('Something went wrong. Please try again.')) ?>',
+
+            init() {
+                this.config = JSON.parse(this.$root.dataset.config || '{}');
+                this.restore();
+                if (this.messages.length === 0 && this.config.welcomeMessage) {
+                    this.messages.push(this.assistantMessage(this.config.welcomeMessage, true));
+                }
+                if (this.panelOpen) {
+                    this.$nextTick(() => this.trap());
+                }
+            },
+
+            assistantMessage(content, seed) {
+                return {role: 'assistant', content: content, isUser: false, isAssistant: true, seed: !!seed, cards: [], hasCards: false};
+            },
+
+            updateDraft() {
+                this.draft = this.$event.target.value;
+            },
+
+            togglePanel() {
+                this.panelOpen ? this.closePanel() : this.openPanel();
+            },
+
+            openPanel() {
+                this.panelOpen = true;
+                this.persist();
+                this.$nextTick(() => {
+                    this.trap();
+                    this.scrollToBottom();
+                    if (this.$refs.input) this.$refs.input.focus();
+                });
+            },
+
+            closePanel() {
+                if (!this.panelOpen) {
+                    return;
+                }
+                this.panelOpen = false;
+                this.release();
+                this.persist();
+            },
+
+
+            resetChat() {
+                if (this.controller) {
+                    this.controller.abort();
+                    this.controller = null;
+                }
+                this.loading = false;
+                this.searching = false;
+                this.error = '';
+                this.draft = '';
+                this.messages = [];
+                try {
+                    window.sessionStorage.removeItem(this.storageKey);
+                } catch (e) {}
+                if (this.config.welcomeMessage) {
+                    this.messages.push(this.assistantMessage(this.config.welcomeMessage, true));
+                }
+                this.persist();
+                this.scrollToBottom();
+                this.$nextTick(() => { if (this.$refs.input) this.$refs.input.focus(); });
+            },
+
+            trap() {
+                if (window.hyva && hyva.trapFocus && this.$refs.panel) {
+                    hyva.trapFocus(this.$refs.panel);
+                }
+            },
+
+            release() {
+                if (window.hyva && hyva.releaseFocus && this.$refs.panel) {
+                    hyva.releaseFocus(this.$refs.panel);
+                }
+            },
+
+            async send() {
+                const text = this.draft.trim();
+                if (!text || this.loading) {
+                    return;
+                }
+                this.error = '';
+                this.draft = '';
+                this.messages.push({role: 'user', content: text, isUser: true, isAssistant: false, cards: [], hasCards: false});
+                this.messages.push(this.assistantMessage('', false));
+                const ai = this.messages[this.messages.length - 1];
+                this.loading = true;
+                this.searching = true;
+                this.persist();
+                this.scrollToBottom();
+
+                const history = this.messages
+                    .filter(m => !m.seed && (m.isUser || m.content !== ''))
+                    .map(m => ({role: m.role, content: m.content}));
+
+                this.controller = new AbortController();
+                try {
+                    const resp = await fetch(this.config.completionsUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-Magento-Form-Key': hyva.getFormKey()
+                        },
+                        body: JSON.stringify({messages: history}),
+                        signal: this.controller.signal
+                    });
+
+                    if (!resp.ok || !resp.body) {
+                        let message = this.defaultError;
+                        try {
+                            const data = await resp.json();
+                            if (data && data.error) {
+                                message = data.error;
+                            }
+                        } catch (e) {}
+                        throw new Error(message);
+                    }
+
+                    await this.readStream(resp.body, ai);
+                    // Stream finished ([DONE]): now reveal any buffered product cards, so they
+                    // appear only after the message has fully streamed in.
+                    ai.hasCards = ai.cards.length > 0;
+                } catch (e) {
+                    if (e.name !== 'AbortError') {
+                        this.error = e.message || this.defaultError;
+                    }
+                } finally {
+                    this.loading = false;
+                    this.searching = false;
+                    this.controller = null;
+                    this.persist();
+                    this.scrollToBottom();
+                }
+            },
+
+            async readStream(body, ai) {
+                const reader = body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let event = 'message';
+                let deltaBuffer = '';
+                let rafScheduled = false;
+
+                const flushBuffer = () => {
+                    if (deltaBuffer) {
+                        ai.content += deltaBuffer;
+                        deltaBuffer = '';
+                        this.scrollToBottom();
+                    }
+                    rafScheduled = false;
+                };
+
+                while (true) {
+                    const {done, value} = await reader.read();
+                    if (done) {
+                        flushBuffer();
+                        break;
+                    }
+                    buffer += decoder.decode(value, {stream: true});
+
+                    let idx;
+                    while ((idx = buffer.indexOf('\n')) >= 0) {
+                        const line = buffer.slice(0, idx).replace(/\r$/, '');
+                        buffer = buffer.slice(idx + 1);
+
+                        if (line === '') {
+                            event = 'message';
+                            continue;
+                        }
+                        if (line.indexOf('event:') === 0) {
+                            event = line.slice(6).trim();
+                            continue;
+                        }
+                        if (line.indexOf('data:') === 0) {
+                            const data = line.slice(5).trim();
+                            if (data === '[DONE]') {
+                                flushBuffer();
+                                return;
+                            }
+                            if (event === 'message') {
+                                this.searching = false;
+                                try {
+                                    const parsed = JSON.parse(data);
+                                    const delta = parsed.choices?.[0]?.delta?.content ?? '';
+                                    if (delta) {
+                                        deltaBuffer += delta;
+                                        if (!rafScheduled) {
+                                            rafScheduled = true;
+                                            requestAnimationFrame(flushBuffer);
+                                        }
+                                    }
+                                } catch (e) {}
+                            } else {
+                                this.handleEvent(event, data, ai);
+                            }
+                        }
+                    }
+                }
+            },
+
+            handleEvent(event, data, ai) {
+                if (event === 'products') {
+                    try {
+                        const parsed = JSON.parse(data);
+                        // Buffer the cards but do NOT reveal them yet: _meiliSearchSources arrives
+                        // before the text answer, so we wait until streaming completes (see send()).
+                        ai.cards = (parsed.products || []).map(this.decorateCard);
+                    } catch (e) {}
+                    return;
+                }
+                if (event === 'status') {
+                    this.searching = true;
+                    return;
+                }
+                if (event === 'error') {
+                    try {
+                        const parsed = JSON.parse(data);
+                        this.error = parsed.message || this.defaultError;
+                    } catch (e) {
+                        this.error = this.defaultError;
+                    }
+                    return;
+                }
+                if (event === 'meta') {
+                    return;
+                }
+            },
+
+            renderContent(text) {
+                const escaped = text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;');
+                return escaped.replace(/\*\*(.+?)\*\*/gs, '<b>$1</b>');
+            },
+
+            decorateCard(card) {
+                const canAdd = !!(card.in_stock && card.id);
+                return Object.assign({}, card, {canAddToCart: canAdd, viewOnly: !canAdd && !!card.url});
+            },
+
+            async addToCart() {
+                const card = this.card;
+                if (!card || !card.id) {
+                    return;
+                }
+                try {
+                    const fd = new FormData();
+                    fd.append('product', card.id);
+                    fd.append('qty', '1');
+                    fd.append('form_key', hyva.getFormKey());
+                    fd.append('uenc', hyva.getUenc());
+                    await fetch(this.config.addToCartUrl, {
+                        method: 'POST',
+                        body: fd,
+                        headers: {'X-Requested-With': 'XMLHttpRequest'}
+                    });
+                    window.dispatchEvent(new CustomEvent('reload-customer-section-data'));
+                } catch (e) {
+                    this.error = this.defaultError;
+                }
+            },
+
+            scrollToBottom() {
+                this.$nextTick(() => {
+                    const el = this.$refs.messages;
+                    if (el) {
+                        el.scrollTo({ top: el.scrollHeight, behavior: 'instant' });
+                    }
+                });
+            },
+
+
+            persist() {
+                try {
+                    window.sessionStorage.setItem(this.storageKey, JSON.stringify({
+                        messages: this.messages
+                    }));
+                } catch (e) {}
+            },
+
+            restore() {
+                try {
+                    const raw = window.sessionStorage.getItem(this.storageKey);
+                    if (raw) {
+                        const data = JSON.parse(raw);
+                        const messages = Array.isArray(data.messages) ? data.messages : [];
+                        this.messages = messages.map(m => {
+                            const cards = Array.isArray(m.cards) ? m.cards : [];
+                            return Object.assign({cards: cards}, m, {hasCards: cards.length > 0});
+                        });
+                    }
+                } catch (e) {}
+            }
+        };
+    }
+
+    window.addEventListener('alpine:init', () => Alpine.data('initMeilisearchChat', initMeilisearchChat), {once: true});
+</script>
+<?php $hyvaCsp->registerInlineScript(); ?>

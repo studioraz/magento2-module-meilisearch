@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Config:etc/system_file.xsd">
+    <system>
+        <section id="meilisearch_chat" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
+            <class>separator-top</class>
+            <label>Chat</label>
+            <tab>meilisearch</tab>
+            <resource>Walkwizus_MeilisearchChatBase::config</resource>
+            <group id="settings" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Chat Settings</label>
+                <field id="enabled" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Enable Chat</label>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="chat_api_key" translate="label comment" type="obscure" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Chat API Key (Server Side)</label>
+                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
+                    <comment>
+                        <![CDATA[
+                            <strong class="colorRed">Warning!</strong>
+                            The chat key has the <code>chatCompletions</code> action and triggers paid LLM calls.
+                            It is used <strong>server-side only</strong> and is never exposed to the browser.
+                            Use the "Default Chat API Key" from your Meilisearch instance.
+                        ]]>
+                    </comment>
+                </field>
+                <field id="workspace" translate="label comment" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Chat Workspace</label>
+                    <comment><![CDATA[The Meilisearch chat workspace name (e.g. "default").]]></comment>
+                </field>
+                <field id="log_level" translate="label comment" type="select" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Debug Logging</label>
+                    <source_model>Walkwizus\MeilisearchChatBase\Model\Config\Source\LogLevel</source_model>
+                    <comment>
+                        <![CDATA[
+                            Logs to <code>var/log/meilisearch_chat.log</code>. <strong>Full</strong> logs requests and
+                            responses (PII-adjacent) and should be used temporarily for troubleshooting only.
+                            The chat API key is never logged.
+                        ]]>
+                    </comment>
+                </field>
+            </group>
+            <group id="display" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Display</label>
+                <field id="widget_title" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                    <label>Widget Title</label>
+                </field>
+                <field id="welcome_message" translate="label" type="textarea" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                    <label>Welcome Message</label>
+                </field>
+<field id="disclaimer_text" translate="label comment" type="textarea" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                    <label>Disclaimer Text</label>
+                    <comment><![CDATA[HTML is allowed. Use <code>&lt;a&gt;</code> tags for links. Add <code>target="_blank" rel="noopener noreferrer"</code> to open links in a new tab.]]></comment>
+                </field>
+                <field id="button_position" translate="label" type="select" sortOrder="50" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                    <label>Button Position</label>
+                    <source_model>Walkwizus\MeilisearchChatBase\Model\Config\Source\ButtonPosition</source_model>
+                </field>
+                <field id="button_bottom_distance" translate="label comment" type="text" sortOrder="60" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                    <label>Button Distance from Bottom</label>
+                    <comment><![CDATA[CSS length value, e.g. <code>1rem</code>, <code>20px</code>. Controls the button's bottom offset and the panel's maximum height.]]></comment>
+                </field>
+            </group>
+        </section>
+    </system>
+</config>
