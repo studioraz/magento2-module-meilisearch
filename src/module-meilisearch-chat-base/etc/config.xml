@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Store:etc/config.xsd">
+    <default>
+        <meilisearch_chat>
+            <settings>
+                <enabled>0</enabled>
+                <log_level>errors</log_level>
+            </settings>
+            <display>
+                <widget_title>AI Assistant</widget_title>
+                <welcome_message>Hello, how can I assist you today?</welcome_message>
+                <disclaimer_text><![CDATA[By using our AI chat, you agree to our <a href="/privacy-policy" title="Privacy Policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.]]></disclaimer_text>
+                <button_position>auto</button_position>
+                <button_bottom_distance>2rem</button_bottom_distance>
+            </display>
+        </meilisearch_chat>
+    </default>
+</config>
