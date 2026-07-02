@@ -1,6 +1,6 @@
 # Walkwizus_MeilisearchCatalog
 
-Adds catalog product and category indexing support for Meilisearch, including attribute providers, mappers, and indexer wiring. Registers the `meilisearch_categories_fulltext` indexer and mview subscriptions for category EAV tables.
+Adds catalog product indexing support for Meilisearch, including attribute providers, mappers, and indexer wiring.
 
 **Plug In**
 - Add custom product attributes by registering new providers in the `providers` argument of `Walkwizus\MeilisearchBase\Model\AttributeProvider` under `catalog_product` and context `index`.
