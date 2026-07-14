@@ -9,33 +9,35 @@ use Magento\Framework\App\CsrfAwareActionInterface;
 use Magento\Framework\App\Request\Http as HttpRequest;
 use Magento\Framework\App\Request\InvalidRequestException;
 use Magento\Framework\App\RequestInterface;
-use Magento\Framework\App\Response\Http as HttpResponse;
+use Magento\Framework\Controller\Result\Json;
 use Magento\Framework\Controller\Result\JsonFactory;
-use Magento\Framework\Controller\ResultInterface;
 use Magento\Framework\Data\Form\FormKey;
 use Magento\Framework\HTTP\PhpEnvironment\RemoteAddress;
+use Magento\Framework\Phrase;
+use Magento\Framework\Serialize\Serializer\Json as JsonSerializer;
 use Magento\Framework\Session\SessionManagerInterface;
-use Psr\Http\Message\StreamInterface;
 use Walkwizus\MeilisearchChatBase\Exception\ChatException;
 use Walkwizus\MeilisearchChatBase\Model\Config\ChatSettings;
+use Walkwizus\MeilisearchChatBase\Response\SseResponse;
+use Walkwizus\MeilisearchChatBase\Response\SseResponseFactory;
 use Walkwizus\MeilisearchChatBase\Service\ChatLogger;
 use Walkwizus\MeilisearchChatBase\Service\ChatManager;
 use Walkwizus\MeilisearchChatBase\Service\MessageSanitizer;
 use Walkwizus\MeilisearchChatBase\Service\RateLimiter;
-use Walkwizus\MeilisearchChatBase\Service\StreamTransformer;
 
 /**
- * Storefront streaming proxy: receives the chat history, opens an upstream
- * Meilisearch chat completion, and rewrites the SSE for the browser (text +
- * event:products/status/error). The chat key stays server-side; the browser
- * never talks to Meilisearch directly.
+ * Storefront proxy for streaming Meilisearch chat completions.
+ *
+ * The controller validates the request and delegates the long-lived SSE output
+ * to a dedicated response so the chat key remains server-side.
  */
 class Completions implements HttpPostActionInterface, CsrfAwareActionInterface
 {
     /**
      * @param HttpRequest $request
-     * @param HttpResponse $response
      * @param JsonFactory $jsonFactory
+     * @param JsonSerializer $jsonSerializer
+     * @param SseResponseFactory $sseResponseFactory
      * @param FormKey $formKey
      * @param SessionManagerInterface $session
      * @param RemoteAddress $remoteAddress
@@ -43,13 +45,13 @@ class Completions implements HttpPostActionInterface, CsrfAwareActionInterface
      * @param MessageSanitizer $sanitizer
      * @param RateLimiter $rateLimiter
      * @param ChatManager $chatManager
-     * @param StreamTransformer $transformer
      * @param ChatLogger $chatLogger
      */
     public function __construct(
         private readonly HttpRequest $request,
-        private readonly HttpResponse $response,
         private readonly JsonFactory $jsonFactory,
+        private readonly JsonSerializer $jsonSerializer,
+        private readonly SseResponseFactory $sseResponseFactory,
         private readonly FormKey $formKey,
         private readonly SessionManagerInterface $session,
         private readonly RemoteAddress $remoteAddress,
@@ -57,14 +59,16 @@ class Completions implements HttpPostActionInterface, CsrfAwareActionInterface
         private readonly MessageSanitizer $sanitizer,
         private readonly RateLimiter $rateLimiter,
         private readonly ChatManager $chatManager,
-        private readonly StreamTransformer $transformer,
         private readonly ChatLogger $chatLogger
-    ) { }
+    ) {
+    }
 
     /**
-     * @return ResultInterface|HttpResponse
+     * Validate the chat request and create its JSON or SSE response.
+     *
+     * @return Json|SseResponse
      */
-    public function execute()
+    public function execute(): Json|SseResponse
     {
         $correlationId = bin2hex(random_bytes(8));
 
@@ -72,113 +76,48 @@ class Completions implements HttpPostActionInterface, CsrfAwareActionInterface
             return $this->jsonError(__('The assistant is not available.'), 404);
         }
 
-        // --- Request-time validation (clean JSON errors, no stream opened yet) ---
         try {
-            $body = json_decode((string) $this->request->getContent(), true);
-            $messages = $this->sanitizer->sanitize(\is_array($body) ? ($body['messages'] ?? null) : null);
-        } catch (ChatException $e) {
-            return $this->jsonError($e->getMessage(), 400);
-        } catch (\Throwable $e) {
+            $body = $this->jsonSerializer->unserialize((string) $this->request->getContent());
+        } catch (\InvalidArgumentException) {
             return $this->jsonError(__('Please enter a message.'), 400);
         }
 
         try {
-            $this->rateLimiter->assert($this->rateIdentifier());
+            $messages = $this->sanitizer->sanitize(\is_array($body) ? ($body['messages'] ?? null) : null);
+        } catch (ChatException $e) {
+            return $this->jsonError($e->getMessage(), 400);
+        }
+
+        $rateIdentifier = $this->rateIdentifier();
+        try {
+            $this->rateLimiter->assert($rateIdentifier);
         } catch (ChatException $e) {
             return $this->jsonError($e->getMessage(), 429);
         }
 
-        // --- Open upstream. Call-time failures (bad key / workspace / network) ---
+        // Release the PHP session lock before opening the potentially long-lived
+        // upstream response so the shopper can keep browsing during the stream.
+        $this->session->writeClose();
+
         try {
             $stream = $this->chatManager->streamCompletion($messages);
         } catch (ChatException $e) {
             $this->chatLogger->logError($correlationId, $e->getMessage(), $e->getPrevious());
+
             return $this->jsonError($e->getMessage(), 503);
         }
 
         $this->chatLogger->logRequest($correlationId, $this->chatSettings->getWorkspace(), $messages);
 
-        return $this->stream($stream, $correlationId);
+        return $this->sseResponseFactory->create(['options' => [
+            'stream' => $stream,
+            'correlation_id' => $correlationId,
+        ]]);
     }
 
     /**
-     * @param StreamInterface $stream
-     * @param string $correlationId
-     * @return HttpResponse
-     */
-    private function stream(StreamInterface $stream, string $correlationId): HttpResponse
-    {
-        $this->prepareEnvironment();
-
-        $this->response->setHeader('Content-Type', 'text/event-stream; charset=utf-8', true);
-        $this->response->setHeader('Cache-Control', 'no-cache, no-store, must-revalidate', true);
-        $this->response->setHeader('Pragma', 'no-cache', true);
-        $this->response->setHeader('X-Accel-Buffering', 'no', true);
-        $this->response->setHeader('Connection', 'keep-alive', true);
-        $this->response->sendHeaders();
-
-        // Release the PHP session lock so the shopper can keep browsing while the
-        // (potentially long) answer streams.
-        $this->session->writeClose();
-
-        $emit = static function (string $payload): void {
-            echo $payload;
-            flush();
-        };
-
-        $emit('event: meta' . "\n" . 'data: ' . json_encode(['id' => $correlationId]) . "\n\n");
-
-        $start = microtime(true);
-        try {
-            $summary = $this->transformer->transform(
-                $stream,
-                $emit,
-                static fn (): bool => connection_aborted() === 1
-            );
-        } catch (\Throwable $e) {
-            $this->chatLogger->logError($correlationId, 'stream failure', $e);
-            $emit('event: error' . "\n" . 'data: '
-                . json_encode(['message' => __('The assistant was interrupted. Please try again.')->render()]) . "\n\n");
-            $emit("data: [DONE]\n\n");
-
-            return $this->response;
-        }
-
-        $this->chatLogger->logResponse($correlationId, [
-            'elapsed_ms' => (int) round((microtime(true) - $start) * 1000),
-            'answer' => $summary['text'],
-            'product_ids' => $summary['product_ids'],
-            'aborted' => $summary['aborted'],
-            'completed' => $summary['completed'],
-        ]);
-
-        return $this->response;
-    }
-
-    /**
-     * Disable output buffering / gzip so SSE flushes immediately.
+     * Build the rate-limit key from the current session and remote address.
      *
-     * @return void
-     */
-    private function prepareEnvironment(): void
-    {
-        set_time_limit(0);
-        ignore_user_abort(false);
-
-        if (\function_exists('apache_setenv')) {
-            @apache_setenv('no-gzip', '1');
-        }
-        @ini_set('zlib.output_compression', '0');
-        @ini_set('output_buffering', '0');
-        @ini_set('implicit_flush', '1');
-
-        while (ob_get_level() > 0) {
-            ob_end_flush();
-        }
-        ob_implicit_flush(true);
-    }
-
-    /**
      * @return string
      */
     private function rateIdentifier(): string
@@ -187,31 +126,43 @@ class Completions implements HttpPostActionInterface, CsrfAwareActionInterface
     }
 
     /**
-     * @param \Magento\Framework\Phrase $message
+     * Create a JSON error response.
+     *
+     * @param Phrase|string $message
      * @param int $httpCode
-     * @return ResultInterface
+     * @return Json
      */
-    private function jsonError(\Magento\Framework\Phrase $message, int $httpCode): ResultInterface
+    private function jsonError(Phrase|string $message, int $httpCode): Json
     {
         return $this->jsonFactory->create()
             ->setHttpResponseCode($httpCode)
-            ->setData(['error' => $message->render()]);
+            ->setData(['error' => (string) $message]);
     }
 
     /**
-     * @inheritDoc
+     * Create the JSON replacement response for failed CSRF validation.
+     *
+     * @param RequestInterface $request
+     * @return InvalidRequestException|null
      */
     public function createCsrfValidationException(RequestInterface $request): ?InvalidRequestException
     {
-        return null;
+        return new InvalidRequestException(
+            $this->jsonError(__('Invalid Form Key. Please refresh the page.'), 403)
+        );
     }
 
     /**
-     * @inheritDoc
+     * Validate the form key from the request header or parameter.
+     *
+     * @param RequestInterface $request
+     * @return bool|null
      */
     public function validateForCsrf(RequestInterface $request): ?bool
     {
-        $headerKey = (string) ($this->request->getHeader('X-Magento-Form-Key') ?: '');
+        $headerKey = $request instanceof HttpRequest
+            ? (string) ($request->getHeader('X-Magento-Form-Key') ?: '')
+            : '';
         $formKey = $headerKey !== '' ? $headerKey : (string) $request->getParam('form_key');
 
         return $formKey !== '' && hash_equals((string) $this->formKey->getFormKey(), $formKey);
